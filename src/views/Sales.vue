@@ -155,10 +155,10 @@
                   <v-menu
                     v-model="dateMenu"
                     :close-on-content-click="false"
-                    :nudge-right="40"
                     transition="scale-transition"
                     offset-y
-                    min-width="auto"
+                    min-width="290px"
+                    max-width="290px"
                   >
                     <template v-slot:activator="{ on, attrs }">
                       <v-text-field
@@ -179,6 +179,8 @@
                       @input="dateMenu = false"
                       :max="new Date().toISOString().substr(0, 10)"
                       locale="pt-BR"
+                      scrollable
+                      class="date-picker-sales"
                     ></v-date-picker>
                   </v-menu>
                 </v-col>
@@ -224,21 +226,23 @@
                       <td style="width: 150px">
                         <v-select
                           v-model="item.color"
-                          :items="availableColors"
+                          :items="item.availableColors"
                           label="Cor"
                           dense
                           :disabled="!item.generic_product"
                           @change="updateSelectedVariant(index)"
+                          clearable
                         ></v-select>
                       </td>
                       <td style="width: 150px">
                         <v-select
                           v-model="item.size"
-                          :items="availableSizes"
+                          :items="item.availableSizes"
                           label="Tamanho"
                           dense
-                          :disabled="!item.generic_product"
+                          :disabled="!item.color"
                           @change="updateSelectedVariant(index)"
+                          clearable
                         ></v-select>
                       </td>
                       <td style="width: 120px">
@@ -246,9 +250,14 @@
                           v-model.number="item.quantity"
                           type="number"
                           min="1"
+                          :max="item.availableStock"
                           @input="updateItemTotal(index)"
                           dense
                           :disabled="!item.product_id"
+                          :rules="[
+                            v => (v && v > 0) || 'Quantidade deve ser maior que 0',
+                            v => (v <= item.availableStock) || `Máximo disponível: ${item.availableStock}`
+                          ]"
                         ></v-text-field>
                       </td>
                       <td class="text-right" style="width: 120px">
@@ -537,6 +546,9 @@ export default {
       color: '',
       size: '',
       variant_image_url: null,
+      availableColors: [],
+      availableSizes: [],
+      availableStock: 0,
     },
     productSearch: '',
     selectedProduct: null,
@@ -549,9 +561,6 @@ export default {
       'Transferência Bancária'
     ],
     dateMenu: false,
-    availableColors: [],
-    availableSizes: [],
-    selectedSku: null,
   }),
 
   computed: {
@@ -641,7 +650,7 @@ export default {
     },
 
     async fetchProducts() {
-      // First fetch generic products
+      // Fetch generic products that are active and have products with stock
       const { data: genericData, error: genericError } = await supabase
         .from('generic_products')
         .select(`
@@ -649,6 +658,7 @@ export default {
           name,
           image_url,
           product_type,
+          activate,
           products (
             id,
             price,
@@ -657,6 +667,7 @@ export default {
             size
           )
         `)
+        .eq('activate', true)  // Only active products
         .order('name')
 
       if (genericError) {
@@ -665,14 +676,16 @@ export default {
       }
 
       // Filter and transform the data
-      this.genericProducts = genericData.filter(gp => {
-        // Only include generic products that have available products (stock > 0)
-        const availableProducts = gp.products.filter(p => p.stock > 0)
-        return availableProducts.length > 0
-      }).map(gp => ({
-        ...gp,
-        availableProducts: gp.products.filter(p => p.stock > 0)
-      }))
+      this.genericProducts = genericData
+        .filter(gp => {
+          // Only include generic products that have available products (stock > 0)
+          const availableProducts = gp.products.filter(p => p.stock > 0)
+          return availableProducts.length > 0
+        })
+        .map(gp => ({
+          ...gp,
+          availableProducts: gp.products.filter(p => p.stock > 0)
+        }))
     },
 
     startNewSale() {
@@ -855,25 +868,33 @@ export default {
 
     async selectProduct(genericProduct) {
       this.selectedProduct = genericProduct
-      this.selectedSku = genericProduct.sku
-
-      // Fetch available variants with stock
+      
+      // Resetar os valores do item atual
+      const item = this.currentSale.items[this.currentItemIndex]
+      item.color = ''
+      item.size = ''
+      item.quantity = 1
+      item.product_id = null
+      item.unit_price = 0
+      item.total = 0
+      item.availableColors = []
+      item.availableSizes = []
+      item.availableStock = 0
+      
+      // Buscar cores disponíveis com estoque
       const { data: variants, error } = await supabase
         .from('products')
-        .select('color, size, stock')
+        .select('color, stock')
         .eq('generic_product_id', genericProduct.id)
         .gt('stock', 0)
-        .order('color')
-        .order('size')
 
       if (error) {
-        console.error('Error fetching variants:', error)
+        console.error('Error fetching colors:', error)
         return
       }
 
-      // Get unique colors and sizes from available variants
-      this.availableColors = [...new Set(variants.map(v => v.color))]
-      this.availableSizes = [...new Set(variants.map(v => v.size))]
+      // Atualizar cores disponíveis específicas para este item
+      item.availableColors = [...new Set(variants.map(v => v.color))]
     },
 
     confirmProductSelection() {
@@ -943,54 +964,63 @@ export default {
     async updateSelectedVariant(index) {
       const item = this.currentSale.items[index]
       
-      // Limpar produto selecionado se cor ou tamanho forem removidos
-      if (!item.color || !item.size) {
-        item.product_id = null
-        item.unit_price = 0
-        item.total = 0
-        item.variant_image_url = null
-        return
-      }
-      
-      // Find the specific variant
-      const { data: variants, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('generic_product_id', item.generic_product_id)
-        .eq('color', item.color)
-        .eq('size', item.size)
-        .gt('stock', 0)
-
-      if (error) {
-        console.error('Error finding variant:', error)
-        this.$emit('show-snackbar', {
-          text: 'Erro ao buscar variante do produto',
-          color: 'error'
-        })
-        return
-      }
-
-      if (!variants || variants.length === 0) {
-        this.$emit('show-snackbar', {
-          text: 'Combinação de cor e tamanho não disponível',
-          color: 'error'
-        })
-        item.color = ''
+      // Se a cor foi removida, resetar campos dependentes
+      if (!item.color) {
         item.size = ''
         item.product_id = null
         item.unit_price = 0
         item.total = 0
         item.variant_image_url = null
+        item.availableSizes = []
+        item.availableStock = 0
         return
       }
 
-      const variant = variants[0]
-      
-      // Update the item with the variant details
-      item.product_id = variant.id
-      item.unit_price = variant.price
-      item.variant_image_url = variant.image_url
-      this.updateItemTotal(index)
+      // Se tem cor selecionada, buscar tamanhos disponíveis
+      if (item.color && !item.size) {
+        const { data: variants, error } = await supabase
+          .from('products')
+          .select('size, stock')
+          .eq('generic_product_id', item.generic_product_id)
+          .eq('color', item.color)
+          .gt('stock', 0)
+
+        if (error) {
+          console.error('Error fetching sizes:', error)
+          return
+        }
+
+        item.availableSizes = [...new Set(variants.map(v => v.size))]
+        return
+      }
+
+      // Se tem cor e tamanho selecionados, buscar a variante específica
+      if (item.color && item.size) {
+        const { data: variants, error } = await supabase
+          .from('products')
+          .select('*')
+          .eq('generic_product_id', item.generic_product_id)
+          .eq('color', item.color)
+          .eq('size', item.size)
+          .gt('stock', 0)
+          .single()
+
+        if (error) {
+          console.error('Error finding variant:', error)
+          this.$emit('show-snackbar', {
+            text: 'Erro ao buscar variante do produto',
+            color: 'error'
+          })
+          return
+        }
+
+        // Atualizar os dados do item com a variante encontrada
+        item.product_id = variants.id
+        item.unit_price = variants.price
+        item.variant_image_url = variants.image_url
+        item.availableStock = variants.stock
+        this.updateItemTotal(index)
+      }
     },
   }
 }
@@ -1253,5 +1283,29 @@ export default {
 .products-table :deep(.v-btn) {
   margin: 0;
   padding: 0;
+}
+
+:deep(.date-picker-sales) {
+  max-height: 380px !important;
+}
+
+:deep(.v-menu__content) {
+  max-height: none !important;
+}
+
+:deep(.v-picker--date) {
+  height: auto;
+  max-height: 380px;
+}
+
+:deep(.v-picker--date > .v-picker__body) {
+  height: auto;
+  max-height: 330px;
+}
+
+/* Adicionar para garantir que o calendário tenha altura suficiente */
+:deep(.v-date-picker-table) {
+  height: auto;
+  min-height: 290px;
 }
 </style> 

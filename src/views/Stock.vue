@@ -945,6 +945,7 @@ export default {
         const { data, error } = await supabase
           .from('generic_products')
           .select('*')
+          .eq('activate', true)
           .order('name')
 
         if (error) throw error
@@ -1090,7 +1091,12 @@ export default {
         }
 
         this.closeDialog()
-        await this.fetchProducts()
+        // Atualiza ambas as listas simultaneamente
+        await Promise.all([
+          this.fetchProducts(),
+          this.fetchGenericProducts()
+        ])
+        
         this.$emit('show-snackbar', {
           text: 'Produto salvo com sucesso!',
           color: 'success'
@@ -1203,16 +1209,21 @@ export default {
 
         if (error) throw error
 
-        this.products.splice(this.editedIndex, 1)
+        // Atualiza ambas as listas
+        await Promise.all([
+          this.fetchProducts(),
+          this.fetchGenericProducts() // Adiciona atualização da lista de produtos genéricos
+        ])
+
         this.closeDelete()
         this.$emit('show-snackbar', {
-          text: 'Produto removido com sucesso!',
+          text: 'Produto desativado com sucesso!',
           color: 'success'
         })
       } catch (error) {
         console.error('Error deactivating product:', error)
         this.$emit('show-snackbar', {
-          text: 'Erro ao remover produto',
+          text: 'Erro ao desativar produto',
           color: 'error'
         })
       }
@@ -1269,9 +1280,9 @@ export default {
       const prefix = this.getTypePrefix(this.editedItem.product_type)
       
       try {
-        // Busca todos os SKUs do mesmo tipo
+        // Busca todos os SKUs do mesmo tipo, incluindo produtos ativos e inativos
         const { data, error } = await supabase
-          .from('products')
+          .from('generic_products')
           .select('sku')
           .like('sku', `${prefix}%`)
           .order('sku', { ascending: false })
@@ -1289,6 +1300,20 @@ export default {
 
         // Formata o novo SKU (ex: CAM0001)
         this.editedItem.sku = `${prefix}${nextNumber.toString().padStart(4, '0')}`
+
+        // Verifica se o SKU gerado já existe (ativo ou inativo)
+        const { data: existingSku, error: checkError } = await supabase
+          .from('generic_products')
+          .select('id')
+          .eq('sku', this.editedItem.sku)
+
+        if (checkError) throw checkError
+
+        // Se o SKU já existe, incrementa o número e tenta novamente
+        if (existingSku && existingSku.length > 0) {
+          nextNumber++
+          this.editedItem.sku = `${prefix}${nextNumber.toString().padStart(4, '0')}`
+        }
       } catch (error) {
         console.error('Erro ao gerar SKU:', error)
         this.$emit('show-snackbar', {
