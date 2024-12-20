@@ -90,8 +90,8 @@
               R$ {{ item.total.toFixed(2) }}
             </template>
 
-            <template #[`item.created_at`]="{ item }">
-              {{ new Date(item.created_at).toLocaleDateString() }}
+            <template #[`item.sale_date`]="{ item }">
+              {{ formatDate(item.sale_date) }}
             </template>
 
             <template #[`item.status`]="{ item }">
@@ -196,6 +196,7 @@
                       <th style="width: 150px">Tamanho</th>
                       <th style="width: 120px">Quantidade</th>
                       <th style="width: 120px">Preço Unit.</th>
+                      <th style="width: 120px">Desconto</th>
                       <th style="width: 120px">Total</th>
                       <th style="width: 80px">Ações</th>
                     </tr>
@@ -209,7 +210,7 @@
                           </v-avatar>
                           <div>
                             <div>{{ item.generic_product?.name || 'Selecionar produto' }}</div>
-                            <div class="caption grey--text" v-if="item.generic_product?.sku">
+                            <div class="caption grey--text text--darken-1" v-if="item.generic_product?.sku">
                               SKU: {{ item.generic_product.sku }}
                             </div>
                             <v-btn
@@ -262,6 +263,22 @@
                       </td>
                       <td class="text-right" style="width: 120px">
                         R$ {{ item.unit_price.toFixed(2) }}
+                      </td>
+                      <td style="width: 120px">
+                        <v-text-field
+                          v-model.number="item.discount"
+                          type="number"
+                          min="0"
+                          :max="item.quantity * item.unit_price"
+                          @input="updateItemTotal(index)"
+                          dense
+                          :disabled="!item.product_id"
+                          prefix="R$"
+                          :rules="[
+                            v => v >= 0 || 'Desconto não pode ser negativo',
+                            v => v <= (item.quantity * item.unit_price) || 'Desconto não pode ser maior que o valor total'
+                          ]"
+                        ></v-text-field>
                       </td>
                       <td class="text-right" style="width: 120px">
                         R$ {{ item.total.toFixed(2) }}
@@ -332,7 +349,7 @@
             </v-col>
             <v-col cols="6">
               <strong>Data:</strong> 
-              {{ selectedSale ? new Date(selectedSale.created_at).toLocaleDateString() : '' }}
+              {{ formatDate(selectedSale?.sale_date) }}
             </v-col>
             <v-col cols="6">
               <strong>Método de Pagamento:</strong> 
@@ -344,22 +361,28 @@
                   <thead>
                     <tr>
                       <th>Produto</th>
+                      <th class="text-center">Cor</th>
+                      <th class="text-center">Tamanho</th>
                       <th class="text-right">Quantidade</th>
                       <th class="text-right">Preço Unit.</th>
+                      <th class="text-right">Desconto</th>
                       <th class="text-right">Total</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="item in saleItems" :key="item.id">
                       <td>{{ item.product?.name }}</td>
+                      <td class="text-center">{{ item.color || '-' }}</td>
+                      <td class="text-center">{{ item.size || '-' }}</td>
                       <td class="text-right">{{ item.quantity }}</td>
                       <td class="text-right">R$ {{ item.unit_price.toFixed(2) }}</td>
+                      <td class="text-right">R$ {{ item.discount.toFixed(2) }}</td>
                       <td class="text-right">R$ {{ item.total.toFixed(2) }}</td>
                     </tr>
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td colspan="3" class="text-right font-weight-bold">Total:</td>
+                      <td colspan="6" class="text-right font-weight-bold">Total:</td>
                       <td class="text-right font-weight-bold">
                         R$ {{ selectedSale?.total.toFixed(2) }}
                       </td>
@@ -519,7 +542,7 @@ export default {
       { text: 'Cliente', value: 'customer' },
       { text: 'Total', value: 'total' },
       { text: 'Método de Pagamento', value: 'payment_method', width: '180px' },
-      { text: 'Data', value: 'created_at' },
+      { text: 'Data', value: 'sale_date' },
       { text: 'Status', value: 'status' },
       { text: 'Ações', value: 'actions', sortable: false }
     ],
@@ -542,6 +565,7 @@ export default {
       generic_product: null,
       quantity: 1,
       unit_price: 0,
+      discount: 0,
       total: 0,
       color: '',
       size: '',
@@ -729,7 +753,9 @@ export default {
     updateItemTotal(index) {
       const item = this.currentSale.items[index]
       if (item.quantity && item.unit_price) {
-        item.total = parseFloat((item.quantity * item.unit_price).toFixed(2))
+        const subtotal = item.quantity * item.unit_price
+        const discount = item.discount || 0
+        item.total = parseFloat((subtotal - discount).toFixed(2))
       } else {
         item.total = 0
       }
@@ -745,12 +771,15 @@ export default {
           throw new Error('Dados da venda incompletos')
         }
 
+        // Ajustar a data para meio-dia UTC para evitar problemas de fuso horário
+        const saleDate = new Date(this.currentSale.sale_date + 'T12:00:00Z')
+        
         const newSale = {
           customer_id: this.currentSale.customer_id,
           total: this.calculateTotal,
           status: 'completa',
           payment_method: this.currentSale.payment_method,
-          sale_date: this.currentSale.sale_date
+          sale_date: saleDate.toISOString().split('T')[0] // Pega apenas a parte da data
         }
 
         // Inserimos a venda
@@ -769,6 +798,7 @@ export default {
           product_id: item.product_id,
           quantity: parseInt(item.quantity),
           unit_price: parseFloat(item.unit_price),
+          discount: parseFloat(item.discount || 0),
           total: parseFloat(item.total),
           color: item.color,
           size: item.size
@@ -1022,6 +1052,12 @@ export default {
         this.updateItemTotal(index)
       }
     },
+
+    formatDate(dateString) {
+      if (!dateString) return ''
+      const [year, month, day] = dateString.split('-')
+      return `${day}/${month}/${year}`
+    }
   }
 }
 </script>
