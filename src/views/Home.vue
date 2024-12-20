@@ -21,21 +21,21 @@
           <template v-slot:activator="{ on, attrs }">
             <v-card elevation="2" v-bind="attrs" v-on="on">
               <v-card-text>
-                <div class="text-overline mb-1">Vendas Hoje</div>
-                <div class="text-h4 mb-2">R$ {{ formatCurrency(todaySales) }}</div>
+                <div class="text-overline mb-1">Vendas de Ontem</div>
+                <div class="text-h4 mb-2">R$ {{ formatCurrency(yesterdaySales) }}</div>
                 <div class="text-caption grey--text">
                   <v-icon small :color="salesTrendColor">{{ salesTrendIcon }}</v-icon>
                   <span :class="`${salesTrendColor}--text`">{{ formatNumber(salesTrendPercentage) }}%</span>
-                  em relação a ontem
+                  em relação ao dia anterior
                 </div>
               </v-card-text>
             </v-card>
           </template>
           <div class="pa-2">
-            <p class="mb-1"><strong>Vendas Hoje</strong></p>
-            <p class="mb-1">Soma de todas as vendas realizadas hoje</p>
-            <p class="mb-0"><strong>Cálculo:</strong> Soma do valor total de cada venda do dia</p>
-            <p class="mb-0"><strong>Comparação:</strong> Diferença percentual em relação ao dia anterior</p>
+            <p class="mb-1"><strong>Vendas de Ontem</strong></p>
+            <p class="mb-1">Soma de todas as vendas realizadas ontem</p>
+            <p class="mb-0"><strong>Cálculo:</strong> Soma do valor total de cada venda do dia anterior</p>
+            <p class="mb-0"><strong>Comparação:</strong> Diferença percentual em relação ao dia retrasado</p>
           </div>
         </v-tooltip>
       </v-col>
@@ -394,6 +394,7 @@ export default {
     VChart
   },
   data: () => ({
+    yesterdaySales: 0,
     todaySales: 0,
     monthSales: 0,
     totalSalesMonth: 0,
@@ -597,27 +598,27 @@ export default {
       ])
     },
     async loadSalesMetrics() {
-      const today = new Date().toISOString().split('T')[0]
       const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
+      const dayBeforeYesterday = new Date(Date.now() - 86400000 * 2).toISOString().split('T')[0]
       
-      // Vendas de hoje
-      const { data: todaySalesData } = await supabase
-        .from('sales')
-        .select('total')
-        .eq('sale_date', today)
-
       // Vendas de ontem
       const { data: yesterdaySalesData } = await supabase
         .from('sales')
         .select('total')
         .eq('sale_date', yesterday)
 
-      this.todaySales = todaySalesData?.reduce((acc, curr) => acc + curr.total, 0) || 0
-      const yesterdaySales = yesterdaySalesData?.reduce((acc, curr) => acc + curr.total, 0) || 0
+      // Vendas de anteontem
+      const { data: dayBeforeYesterdaySalesData } = await supabase
+        .from('sales')
+        .select('total')
+        .eq('sale_date', dayBeforeYesterday)
+
+      this.yesterdaySales = yesterdaySalesData?.reduce((acc, curr) => acc + curr.total, 0) || 0
+      const dayBeforeYesterdaySales = dayBeforeYesterdaySalesData?.reduce((acc, curr) => acc + curr.total, 0) || 0
 
       // Cálculo da tendência
-      if (yesterdaySales > 0) {
-        this.salesTrendPercentage = (((this.todaySales - yesterdaySales) / yesterdaySales) * 100).toFixed(1)
+      if (dayBeforeYesterdaySales > 0) {
+        this.salesTrendPercentage = (((this.yesterdaySales - dayBeforeYesterdaySales) / dayBeforeYesterdaySales) * 100).toFixed(1)
         this.salesTrendColor = this.salesTrendPercentage > 0 ? 'success' : 'error'
         this.salesTrendIcon = this.salesTrendPercentage > 0 ? 'mdi-arrow-up' : 'mdi-arrow-down'
       }
@@ -1068,7 +1069,6 @@ export default {
     },
     async loadSizeDistribution() {
       try {
-        // Buscar vendas com produtos e seus tamanhos
         const { data: saleItems, error } = await supabase
           .from('sale_items')
           .select(`
@@ -1082,7 +1082,7 @@ export default {
 
         if (error) throw error
 
-        // Lista de tamanhos padrão do sistema
+        // Lista de tamanhos padrão do sistema em ordem específica
         const validSizes = [
           'PP',
           'P',
@@ -1100,7 +1100,6 @@ export default {
 
         saleItems?.forEach(item => {
           const size = item.products?.size || 'Não definido'
-          // Usar apenas tamanhos válidos
           if (validSizes.includes(size)) {
             if (!sizeTotals[size]) {
               sizeTotals[size] = { quantity: 0, percentage: 0 }
@@ -1115,22 +1114,17 @@ export default {
           sizeTotals[size].percentage = (sizeTotals[size].quantity / totalQuantity) * 100
         })
 
-        // Ordenar por quantidade
+        // Ordenar os tamanhos conforme a ordem definida em validSizes
         this.sizeDistribution = Object.fromEntries(
-          Object.entries(sizeTotals).sort((a, b) => {
-            // Ordenação personalizada baseada na sequência de tamanhos
-            const sizeOrder = validSizes.reduce((acc, size, index) => {
-              acc[size] = index
-              return acc
-            }, {})
-            return sizeOrder[a[0]] - sizeOrder[b[0]]
-          })
+          validSizes
+            .filter(size => sizeTotals[size]) // Incluir apenas tamanhos que têm vendas
+            .map(size => [size, sizeTotals[size]])
         )
 
         // Atualizar dados do gráfico
         this.sizeDistributionChart.series[0].data = Object.entries(this.sizeDistribution)
           .map(([size, data]) => ({
-            name: size, // Usar o nome real do tamanho
+            name: size,
             value: data.quantity,
             percentage: data.percentage
           }))
